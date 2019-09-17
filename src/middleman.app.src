@@ -1,0 +1,15 @@
+{application, middleman,
+ [{description, "An OTP application"},
+  {vsn, "0.1.0"},
+  {registered, [middleman_worker_sup, middleman_sup, middleman_registry]},
+  {mod, {middleman_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
