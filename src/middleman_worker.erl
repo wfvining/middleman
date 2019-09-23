@@ -11,7 +11,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, assign_sink/2, remove_sink/1, put_message/2]).
+-export([start_link/0, assign_sink/2, remove_sink/1, put/2, stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -56,12 +56,20 @@ remove_sink(Middleman) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Stop the middleman. Discards any held messages.
+%%--------------------------------------------------------------------
+-spec stop(Middleman :: pid()) -> ok.
+stop(Middleman) ->
+    gen_server:stop(Middleman).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Pass a message to the middleman. The message will be held and
 %% forwarded if/when a sink is assigned.
 %% @end
 %% --------------------------------------------------------------------
--spec put_message(Middleman :: pid(), Message :: term()) -> ok.
-put_message(Middleman, Message) ->
+-spec put(Middleman :: pid(), Message :: term()) -> ok.
+put(Middleman, Message) ->
     gen_server:cast(Middleman, {put_message, Message}).
 
 %%%===================================================================
@@ -100,9 +108,20 @@ init([]) ->
 handle_call({assign_sink, Sink}, _From, State = #state{ sink = undefined }) ->
     %% use a timeout to start writing messages to the sink when there
     %% is no other work to do.
-    {reply, ok, State#state{sink = Sink}, {timeout, 0}};
-handle_call({assign_sink, _}, _From, State) ->
-    {reply, already_assigned, State, {timeout, 0}}.
+    self() ! drain_messages,
+    {reply, ok, State#state{sink = Sink}};
+handle_call({assign_sink, NewSink}, _From, State = #state{ sink = SinkSocket }) ->
+    %% XXX: I can't find a better way to test if the socket is closed.
+    %%      The inet man page says the the behavior I rely on here is
+    %%      for backward compatability, which would imply that this is
+    %%      not the right way to do this.
+    case inet:getopts(SinkSocket, [mode]) of
+        {ok, _} ->
+            {reply, already_assigned, State};
+        {error, _} ->
+            self() ! drain_messages,
+            {reply, ok, State#state{sink = NewSink}}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -116,7 +135,11 @@ handle_call({assign_sink, _}, _From, State) ->
                          {noreply, NewState :: term(), hibernate} |
                          {stop, Reason :: term(), NewState :: term()}.
 handle_cast({put_message, Message}, State = #state{held_messages = Q}) ->
-    {noreply, State#state{held_messages = queue:in(Message, Q)}, {timeout, 0}};
+    case queue:is_empty(Q) of
+        true  -> self() ! drain_messages;
+        false -> ok
+    end,
+    {noreply, State#state{held_messages = queue:in(Message, Q)}};
 handle_cast(remove_sink, State) ->
     {noreply, State#state{sink = undefined}}.
 
@@ -131,12 +154,15 @@ handle_cast(remove_sink, State) ->
                          {noreply, NewState :: term(), Timeout :: timeout()} |
                          {noreply, NewState :: term(), hibernate} |
                          {stop, Reason :: normal | term(), NewState :: term()}.
-handle_info(timeout, State = #state{held_messages = Q, sink = Sink}) ->
-    case queue:take(Q) of
+handle_info(drain_messages, State = #state{sink = undefined}) ->
+    {noreply, State};
+handle_info(drain_messages, State = #state{held_messages = Q, sink = Sink}) ->
+    case queue:out(Q) of
         {{value, Message}, NewQ} ->
             case gen_tcp:send(Sink, Message) of
                 ok ->
-                    {noreply, State#state{held_messages = NewQ}, {timeout, 0}};
+                    self() ! drain_messages,
+                    {noreply, State#state{held_messages = NewQ}};
                 {error, _Reason} ->
                     %% the connection broke. remove the sink and keep
                     %% Message in the queue.

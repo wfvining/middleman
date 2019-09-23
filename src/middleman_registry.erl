@@ -14,7 +14,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, get_middleman/1, remove_middleman/1]).
+-export([start_link/0, get/1, remove/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -40,12 +40,12 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec get_middleman(Name :: term()) -> {ok, pid()}.
-get_middleman(Name) ->
+-spec get(Name :: term()) -> {ok, pid()}.
+get(Name) ->
     gen_server:call(?SERVER, {get_middleman, Name}).
 
--spec remove_middleman(Name :: term()) -> ok.
-remove_middleman(Name) ->
+-spec remove(Name :: term()) -> ok.
+remove(Name) ->
     gen_server:cast(?SERVER, {remove_middleman, Name}).
 
 %%%===================================================================
@@ -86,7 +86,7 @@ handle_call({get_middleman, Name}, _From, State = #state{middlemen = Middlemen, 
         {Pid, _} ->
             {reply, {ok, Pid}, State}
     catch error:{badkey, _} ->
-            Pid = middleman_worker_sup:start_middleman(),
+            {ok, Pid} = middleman_worker_sup:start_middleman(),
             Ref = erlang:monitor(process, Pid),
             {reply, {ok, Pid},
              #state{ middlemen = maps:put(Name, {Pid, Ref}, Middlemen),
